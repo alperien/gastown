@@ -7,7 +7,7 @@
 //   session_start       → gt prime --hook (capture context)
 //   before_agent_start  → inject captured context + check mail every prompt
 //   session.compacting  → inject compaction recovery instructions
-//   tool_call           → gt tap guard pr-workflow (on git push/pr create)
+//   tool_call           → gt tap guard pr-workflow (on gh pr create / branch creation)
 //   session_shutdown    → gt costs record
 //
 // Loaded via: omp --hook gastown-hook.ts
@@ -108,10 +108,16 @@ export default function (pi) {
   pi.on("tool_call", async (event, ctx) => {
     if (event.toolName === "bash" && event.input?.command) {
       const cmd = event.input.command;
+      // These three match the Claude reference templates exactly. `git push` is
+      // deliberately NOT here: `tap guard pr-workflow` blocks unconditionally in
+      // agent context and never inspects the command, so triggering it on a push
+      // added no signal while blocking the one operation Gas Town endorses
+      // ("push directly to main"). That made every push in every rig fail,
+      // including the refinery's own merge push, so no MR could ever land.
       if (
-        cmd.includes("git push") ||
         cmd.includes("gh pr create") ||
-        cmd.includes("git checkout -b")
+        cmd.includes("git checkout -b") ||
+        cmd.includes("git switch -c")
       ) {
         try {
           const result = await pi.exec("gt", ["tap", "guard", "pr-workflow"]);
