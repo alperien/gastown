@@ -296,6 +296,26 @@ func TestIsDoneCommand(t *testing.T) {
 	if isDoneCommand(root) {
 		t.Fatal("root command should not be detected as done")
 	}
+	if isDoneCommand(nil) {
+		t.Fatal("nil command should not be detected as done")
+	}
+}
+
+// Regression: `gt dog done` shares the leaf name "done" with the polecat
+// command. isDoneCommand must not claim it, or persistentPreRun applies the
+// polecat-ownership guard and every dog is rejected with
+// "gt done is for polecats only (BD_ACTOR=dog)".
+func TestIsDoneCommandIgnoresNestedDoneCommands(t *testing.T) {
+	root := &cobra.Command{Use: "gt"}
+	dog := &cobra.Command{Use: "dog"}
+	root.AddCommand(dog)
+
+	dogDone := &cobra.Command{Use: "done"}
+	dog.AddCommand(dogDone)
+
+	if isDoneCommand(dogDone) {
+		t.Fatal("gt dog done must not be detected as the polecat done command")
+	}
 }
 
 func TestPersistentPreRunDoneRejectsBeforeRegistryFallback(t *testing.T) {

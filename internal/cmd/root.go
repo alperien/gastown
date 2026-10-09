@@ -189,13 +189,21 @@ func isRoleCommand(cmd *cobra.Command) bool {
 	return false
 }
 
+// isDoneCommand reports whether cmd is the top-level polecat `gt done`.
+//
+// Cobra leaf names are not unique: `gt dog done` shares the name "done" with
+// the polecat command. Matching by name alone made the ancestor walk also
+// capture `gt dog done`, so persistentPreRun applied the polecat-ownership
+// guard to it and every dog failed with "gt done is for polecats only".
+//
+// A `done` that is unparented or a direct child of root is the polecat
+// command; one nested under another namespace is a different command.
 func isDoneCommand(cmd *cobra.Command) bool {
-	for c := cmd; c != nil; c = c.Parent() {
-		if c.Name() == "done" {
-			return true
-		}
+	if cmd == nil || cmd.Name() != "done" {
+		return false
 	}
-	return false
+	parent := cmd.Parent()
+	return parent == nil || parent == cmd.Root()
 }
 
 // initCLITheme initializes the CLI color theme based on settings and environment.
