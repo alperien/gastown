@@ -202,6 +202,51 @@ func ParseAgentFields(description string) *AgentFields {
 	return fields
 }
 
+// standingRoleLabels returns the protection labels a standing role bead needs.
+//
+// A rig's witness/refinery/crew-user bead is not a task with an end. It exists for as long as the
+// rig does, so its `updated_at` only moves when something touches it -- and the wisp reaper's
+// staleness auto-close keys on exactly that (hq-60a5). Without an exemption it is guaranteed to be
+// closed eventually, and closing it is silently wrong: the role keeps running while its tracking
+// bead reads closed.
+//
+// This is why the fix is a label rather than a larger stale threshold. A bigger threshold only
+// postpones the same closure. At the time of hq-60a5 the three xianyumcp role beads had been
+// auto-closed at 7 days while gt-gastown's identical pair sat at 4 -- age was the only difference
+// between them, so gastown's were on the same path.
+func standingRoleLabels(id string) []string {
+	if !IsStandingRoleID(id) {
+		return nil
+	}
+	return []string{"gt:role", "gt:rig"}
+}
+
+// IsStandingRoleID reports whether an agent bead id names a standing rig role rather than an
+// ephemeral polecat. Poles are created and nuked per task; these three are created with the rig and
+// outlive every task. The id shape is <prefix>-<rig>-<role>, and the rig part may itself contain a
+// dash (gastown_webui), so the role is matched at the end of the id rather than by position.
+func IsStandingRoleID(id string) bool {
+	// A polecat can be given any name, including "witness" or "refinery". Its id carries an extra
+	// segment for the role kind (gt-<rig>-polecat-witness), so the bare suffix is not enough --
+	// matching on it would hand a polecat a permanent exemption and leak its bead.
+	for _, kind := range ephemeralAgentKinds {
+		if strings.Contains(id, "-"+kind+"-") {
+			return false
+		}
+	}
+	for _, role := range standingRoleSuffixes {
+		if strings.HasSuffix(id, role) {
+			return true
+		}
+	}
+	return false
+}
+
+var (
+	standingRoleSuffixes = []string{"-witness", "-refinery", "-crew-user"}
+	ephemeralAgentKinds = []string{"polecat", "polecap", "dog"}
+)
+
 // CreateAgentBead creates an agent bead for tracking agent lifecycle.
 // The ID format is: <prefix>-<rig>-<role>-<name> (e.g., gt-gastown-polecat-Toast)
 // Use AgentBeadID() helper to generate correct IDs.
@@ -237,6 +282,10 @@ func (b *Beads) CreateAgentBead(id, title string, fields *AgentFields) (*Issue, 
 			"--description=" + description,
 			"--type=task",
 			"--labels=gt:agent",
+		}
+		// A standing role bead also gets the reaper exemption (hq-60a5), or its own age closes it.
+		for _, l := range standingRoleLabels(id) {
+			a = append(a, "--label="+l)
 		}
 		if NeedsForceForID(id) {
 			a = append(a, "--force")
@@ -287,7 +336,7 @@ func (b *Beads) createAgentBeadViaStore(ctx context.Context, id, title, descript
 		CreatedAt:   now,
 		UpdatedAt:   now,
 		CreatedBy:   actor,
-		Labels:      []string{"gt:agent"},
+		Labels:      append([]string{"gt:agent"}, standingRoleLabels(id)...),
 	}
 	if err := store.CreateIssue(ctx, issue, actor); err != nil {
 		return nil, err
@@ -374,7 +423,13 @@ func labelsForAgentBeadReuse(existing []string) []string {
 	labels := []string{"gt:agent"}
 	seen := map[string]bool{"gt:agent": true}
 	for _, label := range existing {
-		if !strings.HasPrefix(label, "safety_stop:") || seen[label] {
+		if seen[label] {
+			continue
+		}
+		// Keep safety_stop labels, and keep protection labels: this function used to drop
+		// everything but gt:agent, so a role bead that went through a reset lost its reaper
+		// exemption (hq-60a5) and became closable by age again with nothing to show why.
+		if !strings.HasPrefix(label, "safety_stop:") && !ProtectedIssueLabel(label) {
 			continue
 		}
 		labels = append(labels, label)
