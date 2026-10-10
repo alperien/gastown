@@ -38,6 +38,35 @@ type WispReaperConfig struct {
 	MaxAgeStr    string   `json:"max_age,omitempty"`
 	DeleteAgeStr string   `json:"delete_age,omitempty"`
 	Databases    []string `json:"databases,omitempty"`
+	// QueryTimeoutStr bounds one read/write against a Dolt database. The
+	// reaper's anti-join and age queries scan the whole wisps table, and on a
+	// town-sized hq they run well past the 10s this used to hardcode, so the
+	// reaper aborted mid-cycle and reported 0 reaps rather than failing
+	// loudly (hq-ddz).
+	QueryTimeoutStr string `json:"query_timeout,omitempty"`
+}
+
+// wispReaperDefaultQueryTimeout is the per-query budget when
+// patrols.wisp_reaper.query_timeout is unset or unparseable.
+//
+// The old value was 10s, hardcoded at all four OpenDB call sites. It was
+// chosen for a small table and never revisited; on hq it is below the cost of
+// a legitimate query, so a slow-but-correct reaper was indistinguishable from
+// an empty one.
+const wispReaperDefaultQueryTimeout = 60 * time.Second
+
+// wispReaperQueryTimeout returns the configured per-query budget, or the
+// default. A configured value must parse and be positive, otherwise the
+// default stands rather than falling back to a value that cannot work.
+func wispReaperQueryTimeout(config *DaemonPatrolConfig) time.Duration {
+	if config != nil && config.Patrols != nil && config.Patrols.WispReaper != nil {
+		if raw := config.Patrols.WispReaper.QueryTimeoutStr; raw != "" {
+			if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+				return d
+			}
+		}
+	}
+	return wispReaperDefaultQueryTimeout
 }
 
 // wispReaperInterval returns the configured interval, or the default (1h).
@@ -167,7 +196,7 @@ func (d *Daemon) reapWispsInline(config *WispReaperConfig, maxAge, deleteAge tim
 		if err := reaper.ValidateDBName(dbName); err != nil {
 			continue
 		}
-		db, err := reaper.OpenDB(host, port, dbName, 10*time.Second, 10*time.Second)
+		db, err := reaper.OpenDB(host, port, dbName, wispReaperQueryTimeout(d.patrolConfig), wispReaperQueryTimeout(d.patrolConfig))
 		if err != nil {
 			d.logger.Printf("wisp_reaper: %s: connect error: %v", dbName, err)
 			reapErrors++
@@ -243,7 +272,7 @@ func (d *Daemon) reapWispsInline(config *WispReaperConfig, maxAge, deleteAge tim
 		if err := reaper.ValidateDBName(dbName); err != nil {
 			continue
 		}
-		db, err := reaper.OpenDB(host, port, dbName, 10*time.Second, 10*time.Second)
+		db, err := reaper.OpenDB(host, port, dbName, wispReaperQueryTimeout(d.patrolConfig), wispReaperQueryTimeout(d.patrolConfig))
 		if err != nil {
 			continue
 		}
@@ -270,7 +299,7 @@ func (d *Daemon) reapWispsInline(config *WispReaperConfig, maxAge, deleteAge tim
 		if err := reaper.ValidateDBName(dbName); err != nil {
 			continue
 		}
-		db, err := reaper.OpenDB(host, port, dbName, 10*time.Second, 10*time.Second)
+		db, err := reaper.OpenDB(host, port, dbName, wispReaperQueryTimeout(d.patrolConfig), wispReaperQueryTimeout(d.patrolConfig))
 		if err != nil {
 			continue
 		}
@@ -296,7 +325,7 @@ func (d *Daemon) reapWispsInline(config *WispReaperConfig, maxAge, deleteAge tim
 		if err := reaper.ValidateDBName(dbName); err != nil {
 			continue
 		}
-		db, err := reaper.OpenDB(host, port, dbName, 10*time.Second, 10*time.Second)
+		db, err := reaper.OpenDB(host, port, dbName, wispReaperQueryTimeout(d.patrolConfig), wispReaperQueryTimeout(d.patrolConfig))
 		if err != nil {
 			autoCloseErrors++
 			continue
