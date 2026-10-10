@@ -138,6 +138,29 @@ Examples:
 	RunE: runDogCall,
 }
 
+var dogDonePlugin string
+var dogDoneResult string
+var dogDoneTitle string
+
+// recordPluginRun writes the run receipt for a plugin a dog just finished.
+// Kept separate from runPluginRecordRun so gt dog done can fold the receipt in
+// without depending on cobra flag state.
+func recordPluginRun(pluginName, result, title string) error {
+	townRoot, err := workspace.FindFromCwdOrError()
+	if err != nil {
+		return fmt.Errorf("not in a Gas Town workspace: %w", err)
+	}
+	if result == "" {
+		result = string(plugin.ResultSuccess)
+	}
+	_, err = plugin.NewRecorder(townRoot).RecordRun(plugin.PluginRunRecord{
+		PluginName: pluginName,
+		Result:     plugin.RunResult(result),
+		Title:      title,
+	})
+	return err
+}
+
 var dogDoneCmd = &cobra.Command{
 	Use:   "done [name]",
 	Short: "Mark dog as done and return to idle",
@@ -147,12 +170,21 @@ Dogs should call this when they complete their work assignment.
 This clears the work field and sets state to idle, making the dog
 available for new work.
 
+Recording a plugin run and finishing the dog were two separate commands, so a
+truncated response could lose both: the dog stayed "working" forever with no
+receipt showing whether its work had landed. --plugin folds the receipt into
+this command, leaving one step at the end of the dog's turn instead of two.
+Recording happens before the state transition, and a recording failure does
+not block the transition -- the dog still finishes, with the failure on
+stderr.
+
 Without a name argument, auto-detects the current dog from the working
 directory (must be run from within a dog's worktree).
 
 Examples:
-  gt dog done         # Auto-detect from cwd
-  gt dog done alpha   # Explicit name`,
+  gt dog done                        # Auto-detect from cwd
+  gt dog done alpha                  # Explicit name
+  gt dog done --plugin compactor-dog --result success`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runDogDone,
 }
@@ -265,6 +297,9 @@ func init() {
 	dogCallCmd.Flags().BoolVar(&dogCallAll, "all", false, "Wake all idle dogs")
 
 	// Clear flags (reuses dogForce from remove)
+	dogDoneCmd.Flags().StringVar(&dogDonePlugin, "plugin", "", "Record a plugin-run receipt before finishing")
+	dogDoneCmd.Flags().StringVar(&dogDoneResult, "result", "", "Outcome of the plugin run")
+	dogDoneCmd.Flags().StringVar(&dogDoneTitle, "title", "", "Title for the plugin-run receipt")
 	dogClearCmd.Flags().BoolVarP(&dogForce, "force", "f", false, "Force clear even if session exists")
 
 	// Status flags
@@ -683,6 +718,24 @@ func runDogDone(cmd *cobra.Command, args []string) error {
 	if d.State == dog.StateIdle && d.Work == "" {
 		fmt.Printf("Dog %s is already idle with no work\n", name)
 		return nil
+	}
+
+	// Record the plugin receipt BEFORE the state transition. Ordering matters:
+	// a dog that records first and is then truncated still leaves evidence of
+	// what it did, whereas a dog that finishes first and is truncated during
+	// recording leaves a "working" dog with no receipt either way.
+	if dogDonePlugin != "" {
+		title := dogDoneTitle
+		if title == "" {
+			title = "Plugin run: " + dogDonePlugin
+		}
+		if err := recordPluginRun(dogDonePlugin, dogDoneResult, title); err != nil {
+			// Deliberately non-fatal. The pane already says to finish even if
+			// recording fails, so blocking here would strand the dog instead.
+			fmt.Fprintf(os.Stderr, "warning: recording plugin run %q failed: %v\n", dogDonePlugin, err)
+		} else {
+			fmt.Printf("  Recorded plugin run %s\n", dogDonePlugin)
+		}
 	}
 
 	if err := mgr.ClearWork(name); err != nil {

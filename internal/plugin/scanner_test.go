@@ -708,8 +708,11 @@ func TestFormatMailBody_WithRunScript(t *testing.T) {
 	if !strings.Contains(body, "Do NOT interpret the plugin.md instructions") {
 		t.Error("expected mail body to warn against interpreting markdown")
 	}
-	if !strings.Contains(body, "gt plugin record-run --plugin test-plugin --result <outcome>") {
-		t.Error("expected mail body to use canonical plugin run recorder")
+	if !strings.Contains(body, "gt dog done --plugin test-plugin --result") {
+		t.Error("expected mail body to record the run via gt dog done --plugin")
+	}
+	if strings.Contains(body, "gt plugin record-run") {
+		t.Error("expected mail body to fold recording into gt dog done rather than prescribe a separate step")
 	}
 	if strings.Contains(body, "bd create --ephemeral") {
 		t.Error("expected mail body to avoid raw ephemeral receipt creation")
@@ -893,8 +896,11 @@ func TestFormatMailBody_WithoutRunScript(t *testing.T) {
 	if strings.Contains(body, "bash run.sh") {
 		t.Error("expected mail body to NOT contain run.sh command")
 	}
-	if !strings.Contains(body, "gt plugin record-run --plugin test-plugin --result <outcome>") {
-		t.Error("expected mail body to use canonical plugin run recorder")
+	if !strings.Contains(body, "gt dog done --plugin test-plugin --result") {
+		t.Error("expected mail body to record the run via gt dog done --plugin")
+	}
+	if strings.Contains(body, "gt plugin record-run") {
+		t.Error("expected mail body to fold recording into gt dog done rather than prescribe a separate step")
 	}
 	if strings.Contains(body, "bd create --ephemeral") {
 		t.Error("expected mail body to avoid raw ephemeral receipt creation")
