@@ -237,7 +237,39 @@ func (d *Daemon) reapIdleDogs(mgr *dog.Manager, sm *dog.SessionManager, daemonCf
 
 // dispatchPlugins scans for plugins, evaluates cooldown gates, and dispatches
 // eligible plugins to idle dogs.
+// minDogDispatchInterval is the minimum wall-clock gap between two dog
+// dispatches from the same pass.
+//
+// The loop below walks every eligible plugin and dispatches to the next idle
+// dog it finds. With no gap, a catch-up burst starts all four dog sessions
+// within ~90s of each other, every turn runs long, and every turn truncates
+// before reaching `gt dog done` -- so the dogs stay "working", never finish,
+// and the cycle repeats. Measured twice: alpha/bravo/charlie/delta at
+// 11:47:25/11:47:55/11:48:27/11:48:58 and again at 12:03:30/12:04:03/12:04:47/
+// 12:05:19 (hq-wisp-fun0, hq-wisp-vy9u). A provider POST returned 200 with
+// finish_reason "stop" in 2.45s during the second burst, so this is a
+// turn-concurrency limit rather than an upstream outage, and spacing the
+// starts is the fix.
+//
+// Cooldown gates already prevent redispatch of the SAME plugin for an hour;
+// this prevents the pack from running many DIFFERENT plugins concurrently.
+const minDogDispatchInterval = 120 * time.Second
+
+// dogDispatchRateLimited reports whether dispatching now would start another
+// dog turn too soon after the previous one.
+//
+// Split out from dispatchPlugins so the policy is testable without standing up
+// a manager, a session manager, and tmux. lastDispatch is the zero time when
+// nothing has been dispatched in this process yet, which always passes.
+func dogDispatchRateLimited(lastDispatch, now time.Time) bool {
+	if lastDispatch.IsZero() {
+		return false
+	}
+	return now.Sub(lastDispatch) < minDogDispatchInterval
+}
+
 func (d *Daemon) dispatchPlugins(mgr *dog.Manager, sm *dog.SessionManager, rigsConfig *config.RigsConfig) {
+	var lastDispatch time.Time
 	// Get rig names for scanner
 	var rigNames []string
 	if rigsConfig != nil {
@@ -259,6 +291,15 @@ func (d *Daemon) dispatchPlugins(mgr *dog.Manager, sm *dog.SessionManager, rigsC
 
 	recorder := plugin.NewRecorder(d.config.TownRoot)
 	router := mail.NewRouterWithTownRoot(d.config.TownRoot, d.config.TownRoot)
+
+	// Rate-limit the pack. Dispatching the whole kennel in one pass is what
+	// starves the turns and truncates them; the remaining plugins stay
+	// eligible and go out on a later pass.
+	if dogDispatchRateLimited(lastDispatch, time.Now()) {
+		d.logger.Printf("Handler: deferring plugins, %s since last dispatch (minimum %s)",
+			time.Since(lastDispatch).Round(time.Second), minDogDispatchInterval)
+		return
+	}
 
 	for _, p := range plugins {
 		// Never auto-dispatch manual-gate plugins — they require an explicit trigger.
@@ -335,6 +376,7 @@ func (d *Daemon) dispatchPlugins(mgr *dog.Manager, sm *dog.SessionManager, rigsC
 		}
 
 		d.logger.Printf("Handler: dispatched plugin %s to dog %s", p.Name, idleDog.Name)
+		lastDispatch = time.Now()
 
 		// Record the dispatch immediately so the cooldown gate is satisfied
 		// for the next 1h regardless of what the dog does. Dogs create their

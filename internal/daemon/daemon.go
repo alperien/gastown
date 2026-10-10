@@ -1401,21 +1401,57 @@ func (d *Daemon) ensureBootRunning() {
 //
 // Returns true conservatively on error or when no stores are available, so the
 // caller falls through to spawn Boot rather than suppressing it incorrectly.
+// hasActiveWorkQueryTimeout bounds the in_progress scan across all rigs.
+//
+// 5s was low enough that a merely slow Dolt query expired the context and got
+// reported as "work present", which made a healthy, busy-on-something-else
+// Deacon look idle and triggered spurious unresponsive escalations (gt-b6r).
+// This is the same defect class as the wisp reaper's hardcoded 10s budget in
+// 22bae49, just at a smaller number on a wider fanout.
+const hasActiveWorkQueryTimeout = 60 * time.Second
+
 func (d *Daemon) hasActiveWork() bool {
 	if len(d.beadsStores) == 0 {
 		// No stores open — cannot inspect; let Boot run to be safe.
 		return true
 	}
 
-	ctx, cancel := context.WithTimeout(d.ctx, 5*time.Second)
+	ctx, cancel := context.WithTimeout(d.ctx, hasActiveWorkQueryTimeout)
 	defer cancel()
 
-	for name, store := range d.beadsStores {
+	own := d.ownWorkStores()
+
+	// A deadline is not an answer. If every store timed out we saw nothing, and
+	// "we could not look" is not the same claim as "there is work" — conflating
+	// them is what produced the false unresponsive reports.
+	timedOut := 0
+
+	// Scope the liveness check to the Deacon's OWN database first.
+	//
+	// This scan originally walked every rig store and returned true on the
+	// first in_progress row found in ANY of them. A single standing P0 in
+	// another rig — gtw-1yi in gastown_webui, which the Deacon cannot act on —
+	// therefore made the Deacon look permanently busy and drew an unresponsive
+	// escalation roughly every 6 minutes, indefinitely, for as long as that
+	// P0 stayed open. Unlike a timeout or an error, which clear on their own,
+	// this one is structural: it fires until an unrelated bead closes.
+	//
+	// A liveness probe answers "is this agent working right now", which is a
+	// question about that agent's own queue, not about the town's total.
+	// Other rigs' work is real and is routed to them by its owners.
+	for _, name := range d.ownWorkStores() {
+		store := d.beadsStores[name]
 		for _, rawStatus := range []string{"in_progress"} {
 			s := beadsdk.Status(rawStatus)
 			filter := beadsdk.IssueFilter{Status: &s, Limit: 1}
 			issues, err := store.SearchIssues(ctx, "", filter)
 			if err != nil {
+				if errors.Is(err, context.DeadlineExceeded) || ctx.Err() == context.DeadlineExceeded {
+					d.logger.Printf("hasActiveWork: %s/%s timed out after %s — no answer, not evidence of work",
+						name, rawStatus, hasActiveWorkQueryTimeout)
+					timedOut++
+					break
+				}
 				d.logger.Printf("hasActiveWork: %s/%s query failed: %v — assuming work present",
 					name, rawStatus, err)
 				return true // conservative: don't suppress Boot on query failure
@@ -1425,7 +1461,35 @@ func (d *Daemon) hasActiveWork() bool {
 			}
 		}
 	}
+
+	if timedOut > 0 {
+		d.logger.Printf("hasActiveWork: %d/%d stores gave no answer within %s — reporting no active work rather than inventing it",
+			timedOut, len(own), hasActiveWorkQueryTimeout)
+	}
 	return false
+}
+
+// townWorkStoreKey is the beadsStores key for the town-level database, which
+// is the queue the Deacon itself acts on. openBeadsStores assigns it verbatim;
+// per-rig stores are keyed by rig name alongside it.
+const townWorkStoreKey = "hq"
+
+// ownWorkStores returns the beads store names whose in_progress work counts as
+// this Deacon's own work for liveness purposes.
+//
+// When the town-level store is open it is the sole authority: the Deacon owns
+// exactly one queue. If it is unavailable we fall back to every open store
+// rather than under-reporting, which would be the same class of bug as the one
+// this replaces.
+func (d *Daemon) ownWorkStores() []string {
+	if _, ok := d.beadsStores[townWorkStoreKey]; ok {
+		return []string{townWorkStoreKey}
+	}
+	names := make([]string, 0, len(d.beadsStores))
+	for name := range d.beadsStores {
+		names = append(names, name)
+	}
+	return names
 }
 
 // runDegradedBootTriage performs mechanical Boot logic without AI reasoning.

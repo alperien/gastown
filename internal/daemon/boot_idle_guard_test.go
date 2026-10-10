@@ -109,12 +109,32 @@ func TestHasActiveWork(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "active work in second store only",
+			// Was: want true, i.e. work in a non-town rig made the Deacon
+			// count as busy. That is the gt-b6r false positive: a single
+			// standing in_progress P0 in another rig (gtw-1yi, gastown_webui,
+			// which the Deacon cannot act on) drew an unresponsive escalation
+			// roughly every 6 minutes, indefinitely, for as long as that bead
+			// stayed open. A liveness probe asks "is this agent working now",
+			// which is a question about that agent's own queue.
+			name: "active work in another rig only does not count as the Deacon's work",
 			stores: map[string]beadsdk.Storage{
 				"hq":  &searchStorage{results: map[string][]*beadsdk.Issue{}},
 				"rig": &searchStorage{results: map[string][]*beadsdk.Issue{
 					"in_progress": {{ID: "nw-xyz"}},
 				}},
+			},
+			want: false,
+		},
+		{
+			// The town queue itself still counts, including when a second
+			// rig is also busy. Scoping must narrow to hq without going blind
+			// to the Deacon's own work.
+			name: "active work in the town store counts",
+			stores: map[string]beadsdk.Storage{
+				"hq": &searchStorage{results: map[string][]*beadsdk.Issue{
+					"in_progress": {{ID: "hq-abc"}},
+				}},
+				"rig": &searchStorage{results: map[string][]*beadsdk.Issue{}},
 			},
 			want: true,
 		},
