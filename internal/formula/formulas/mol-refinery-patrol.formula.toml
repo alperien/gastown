@@ -189,8 +189,10 @@ title = "Check refinery mail"
 description = """
 First, clean up wisps from previous cycles (closed wisps + abandoned wisps):
 ```bash
-bd mol wisp gc --closed --force
-bd mol wisp gc --age 1h --force
+gt compact --dry-run --json   # SAFE. Do NOT run `bd mol wisp gc` here: it hangs
+# past a patrol tick's budget and wedges the cycle (hq-4bvx). Do NOT add
+# --age either - reaping by age inside an active patrol collects LIVE step
+# wisps (regression hq-3pp). Reaping is the reaper dog's job, not the patrol's.
 ```
 
 Then check mail for MERGE_READY submissions, escalations, and messages.

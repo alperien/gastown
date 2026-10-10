@@ -107,7 +107,9 @@ needs = ["heartbeat"]
 description = """
 First, clean up CLOSED wisps from previous cycles:
 ```bash
-bd mol wisp gc --closed --force
+gt compact --dry-run --json   # SAFE. Do NOT run `bd mol wisp gc` here: it hangs
+# past a patrol tick's budget and wedges the cycle (hq-4bvx). Reaping is the
+# reaper dog's job, not the patrol's.
 ```
 
 > **Warning (hq-3pp):** Do not run unscoped age-based wisp GC from inside
@@ -981,6 +983,16 @@ Parse the JSON output:
 - If errors present, log and continue
 
 **Step 2: Execute compaction (if needed)**
+
+> 🚨 **KNOWN HAZARD (hq-wisp-82s43): the executing form hangs.** `gt compact
+> --verbose` was measured running past 300s and had to be SIGTERMed (exit 143).
+> The shape is identical to the `bd mol wisp gc` wedge. Do not run it blind,
+> and do not run it because this step told you to. **If you are an unattended
+> patrol: skip Step 2 and report instead.** An operator who wants the executing
+> form will authorize it directly.
+
+Only if Step 1 reported `promoted + deleted > 0` **and** you have explicit
+operator authorization:
 ```bash
 gt compact --verbose
 ```
@@ -990,12 +1002,15 @@ This runs the compaction algorithm:
 - Non-closed wisps past TTL → promoted (stuck detection)
 - Wisps with comments/references/keep labels → promoted (proven value)
 
+If you skip Step 2, say so in the patrol digest so the skip is visible rather
+than looking like a cycle that found nothing.
+
 **Step 3: Log results**
 Note promoted/deleted/skipped counts for the patrol digest.
 
 **Performance:**
-Compaction runs every patrol cycle. The query is fast (single bd list + filter).
-If performance becomes an issue, add a cooldown gate (e.g., run once per hour).
+The dry-run preview is cheap (measured 0.52s). The executing form is the part
+that hangs, so the preview is the safe default and the usual outcome.
 
 **Exit criteria:** Wisps compacted (or nothing to compact)."""
 
